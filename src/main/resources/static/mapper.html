@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PC - Mapper de teclas</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 1rem auto;
+            max-width: 900px;
+            line-height: 1.4;
+        }
+        .row {
+            display: flex;
+            gap: 0.8rem;
+            flex-wrap: wrap;
+            margin-bottom: 0.8rem;
+        }
+        .card {
+            border: 1px solid #ddd;
+            border-radius: 10px;
+            padding: 0.8rem;
+            margin-top: 0.8rem;
+        }
+        label {
+            font-size: 0.95rem;
+            color: #334155;
+            display: block;
+            margin-bottom: 0.25rem;
+        }
+        input, select, button {
+            font-size: 0.95rem;
+            padding: 0.45rem 0.55rem;
+        }
+        button {
+            border: 0;
+            border-radius: 8px;
+            background: #2563eb;
+            color: #fff;
+            cursor: pointer;
+        }
+        .status {
+            font-weight: bold;
+        }
+        .keys {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 0.4rem;
+        }
+        .key {
+            border: 1px solid #cbd5e1;
+            border-radius: 8px;
+            padding: 0.55rem;
+            text-align: center;
+            background: #f8fafc;
+            font-weight: 600;
+        }
+        .key.active {
+            background: #1d4ed8;
+            color: #fff;
+            border-color: #1d4ed8;
+        }
+        iframe {
+            width: 100%;
+            height: 520px;
+            border: 1px solid #ddd;
+            border-radius: 10px;
+            margin-top: 0.6rem;
+        }
+        #log {
+            white-space: pre-line;
+            color: #334155;
+        }
+    </style>
+</head>
+<body>
+<h1>Mapper de inclinación a teclado</h1>
+<div class="status" id="status">Socket: conectando...</div>
+<p>Abre <code>/mobile.html</code> en el móvil, activa sensores y luego usa esta pantalla para mapear a flechas o WASD.</p>
+
+<div class="card">
+    <div class="row">
+        <div>
+            <label for="preset">Preset de teclas</label>
+            <select id="preset">
+                <option value="arrows">Flechas (↑ ↓ ← →)</option>
+                <option value="wasd">WASD</option>
+                <option value="left-right-arrows">Solo ← →</option>
+                <option value="left-right-ad">Solo A / D</option>
+            </select>
+        </div>
+        <div>
+            <label for="deadzone">Sensibilidad (zona muerta)</label>
+            <input id="deadzone" type="range" min="0.05" max="0.70" step="0.01" value="0.22">
+            <span id="deadzone-value">0.22</span>
+        </div>
+    </div>
+    <div class="keys">
+        <div class="key" id="key-up">UP</div>
+        <div class="key" id="key-down">DOWN</div>
+        <div class="key" id="key-left">LEFT</div>
+        <div class="key" id="key-right">RIGHT</div>
+    </div>
+    <div id="log"></div>
+</div>
+
+<div class="card">
+    <h2>Juego embebido (opcional)</h2>
+    <p>Si quieres, carga aquí una web. Nota: en juegos de otro dominio, el navegador puede bloquear inyección de teclas.</p>
+    <div class="row">
+        <input id="url" type="text" style="flex:1" placeholder="/game.html o https://ejemplo-juego.com">
+        <button id="open">Abrir juego</button>
+        <button id="focus-game" type="button">Foco al juego</button>
+    </div>
+    <iframe id="game-frame" title="game"></iframe>
+</div>
+
+<script>
+    const statusEl = document.getElementById("status");
+    const deadzoneEl = document.getElementById("deadzone");
+    const deadzoneValueEl = document.getElementById("deadzone-value");
+    const presetEl = document.getElementById("preset");
+    const logEl = document.getElementById("log");
+    const frameEl = document.getElementById("game-frame");
+    const urlEl = document.getElementById("url");
+    const openBtn = document.getElementById("open");
+    const focusBtn = document.getElementById("focus-game");
+
+    const keyUpEl = document.getElementById("key-up");
+    const keyDownEl = document.getElementById("key-down");
+    const keyLeftEl = document.getElementById("key-left");
+    const keyRightEl = document.getElementById("key-right");
+
+    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+    const socket = new WebSocket(`${protocol}://${window.location.host}/ws/motion`);
+
+    socket.onopen = () => {
+        statusEl.textContent = "Socket: conectado";
+        socket.send(JSON.stringify({ type: "register", role: "mapper" }));
+    };
+    socket.onclose = () => statusEl.textContent = "Socket: desconectado";
+    socket.onerror = () => statusEl.textContent = "Socket: error";
+
+    const presets = {
+        arrows: {
+            up: { key: "ArrowUp", code: "ArrowUp", enabled: true, label: "↑" },
+            down: { key: "ArrowDown", code: "ArrowDown", enabled: true, label: "↓" },
+            left: { key: "ArrowLeft", code: "ArrowLeft", enabled: true, label: "←" },
+            right: { key: "ArrowRight", code: "ArrowRight", enabled: true, label: "→" }
+        },
+        wasd: {
+            up: { key: "w", code: "KeyW", enabled: true, label: "W" },
+            down: { key: "s", code: "KeyS", enabled: true, label: "S" },
+            left: { key: "a", code: "KeyA", enabled: true, label: "A" },
+            right: { key: "d", code: "KeyD", enabled: true, label: "D" }
+        },
+        "left-right-arrows": {
+            up: { key: "ArrowUp", code: "ArrowUp", enabled: false, label: "-" },
+            down: { key: "ArrowDown", code: "ArrowDown", enabled: false, label: "-" },
+            left: { key: "ArrowLeft", code: "ArrowLeft", enabled: true, label: "←" },
+            right: { key: "ArrowRight", code: "ArrowRight", enabled: true, label: "→" }
+        },
+        "left-right-ad": {
+            up: { key: "w", code: "KeyW", enabled: false, label: "-" },
+            down: { key: "s", code: "KeyS", enabled: false, label: "-" },
+            left: { key: "a", code: "KeyA", enabled: true, label: "A" },
+            right: { key: "d", code: "KeyD", enabled: true, label: "D" }
+        }
+    };
+
+    const active = { up: false, down: false, left: false, right: false };
+    const keyEls = { up: keyUpEl, down: keyDownEl, left: keyLeftEl, right: keyRightEl };
+
+    function currentMap() {
+        return presets[presetEl.value] || presets.arrows;
+    }
+
+    function updateKeyLabels() {
+        const map = currentMap();
+        keyUpEl.textContent = `UP: ${map.up.label}`;
+        keyDownEl.textContent = `DOWN: ${map.down.label}`;
+        keyLeftEl.textContent = `LEFT: ${map.left.label}`;
+        keyRightEl.textContent = `RIGHT: ${map.right.label}`;
+    }
+
+    function updateKeyVisual(direction, pressed) {
+        keyEls[direction].classList.toggle("active", pressed);
+    }
+
+    function dispatchToTargets(type, key, code) {
+        const keyCodeMap = {
+            ArrowUp: 38,
+            ArrowDown: 40,
+            ArrowLeft: 37,
+            ArrowRight: 39,
+            w: 87,
+            a: 65,
+            s: 83,
+            d: 68
+        };
+        const keyCode = keyCodeMap[key] || 0;
+
+        function createKeyboardEvent() {
+            const event = new KeyboardEvent(type, {
+                key,
+                code,
+                bubbles: true,
+                cancelable: true
+            });
+            try {
+                Object.defineProperty(event, "keyCode", { get: () => keyCode });
+                Object.defineProperty(event, "which", { get: () => keyCode });
+            } catch (_) {
+                // Algunos navegadores no permiten redefinir propiedades en KeyboardEvent.
+            }
+            return event;
+        }
+
+        window.dispatchEvent(createKeyboardEvent());
+        document.dispatchEvent(createKeyboardEvent());
+        if (document.activeElement) {
+            document.activeElement.dispatchEvent(createKeyboardEvent());
+        }
+
+        try {
+            if (frameEl.contentWindow) {
+                frameEl.contentWindow.dispatchEvent(createKeyboardEvent());
+                if (frameEl.contentWindow.document) {
+                    frameEl.contentWindow.document.dispatchEvent(createKeyboardEvent());
+                    if (frameEl.contentWindow.document.activeElement) {
+                        frameEl.contentWindow.document.activeElement.dispatchEvent(createKeyboardEvent());
+                    }
+                }
+            }
+        } catch (_) {
+            // Cross-origin frame: no access.
+        }
+    }
+
+    function setDirection(direction, pressed) {
+        if (active[direction] === pressed) return;
+
+        const map = currentMap()[direction];
+        active[direction] = pressed;
+        updateKeyVisual(direction, pressed);
+
+        if (!map.enabled) return;
+        dispatchToTargets(pressed ? "keydown" : "keyup", map.key, map.code);
+    }
+
+    function releaseAll() {
+        setDirection("up", false);
+        setDirection("down", false);
+        setDirection("left", false);
+        setDirection("right", false);
+    }
+
+    function applyTilt(tiltX, tiltY) {
+        const dz = Number(deadzoneEl.value);
+        setDirection("left", tiltX < -dz);
+        setDirection("right", tiltX > dz);
+        setDirection("up", tiltY < -dz);
+        setDirection("down", tiltY > dz);
+
+        logEl.textContent =
+            `tiltX=${tiltX.toFixed(2)} | tiltY=${tiltY.toFixed(2)} | deadzone=${dz.toFixed(2)}\n` +
+            `Activas: ${Object.entries(active).filter(([, v]) => v).map(([k]) => k).join(", ") || "ninguna"}`;
+    }
+
+    socket.onmessage = (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            if (data.type !== "motion") return;
+            const tiltX = Number(data.tiltX) || 0;
+            const tiltY = Number(data.tiltY) || 0;
+            applyTilt(tiltX, tiltY);
+        } catch (_) {
+            // Mensaje no JSON: ignorar
+        }
+    };
+
+    deadzoneEl.addEventListener("input", () => {
+        deadzoneValueEl.textContent = Number(deadzoneEl.value).toFixed(2);
+    });
+
+    presetEl.addEventListener("change", () => {
+        releaseAll();
+        updateKeyLabels();
+    });
+
+    openBtn.addEventListener("click", () => {
+        const url = urlEl.value.trim() || "/game.html";
+        releaseAll();
+        frameEl.src = url;
+    });
+
+    focusBtn.addEventListener("click", () => {
+        try {
+            frameEl.focus();
+            if (frameEl.contentWindow) {
+                frameEl.contentWindow.focus();
+            }
+            logEl.textContent += "\nFoco enviado al iframe.";
+        } catch (_) {
+            logEl.textContent += "\nNo se pudo forzar foco del iframe.";
+        }
+    });
+
+    frameEl.addEventListener("load", () => {
+        try {
+            if (frameEl.contentWindow && frameEl.contentWindow.location) {
+                frameEl.contentWindow.focus();
+            }
+            logEl.textContent += "\nJuego cargado. Si no responde, pulsa 'Foco al juego'.";
+        } catch (_) {
+            logEl.textContent += "\nJuego cargado (dominio externo). Algunos navegadores bloquean teclas sintéticas.";
+        }
+    });
+
+    window.addEventListener("blur", releaseAll);
+    window.addEventListener("beforeunload", releaseAll);
+
+    updateKeyLabels();
+    deadzoneValueEl.textContent = Number(deadzoneEl.value).toFixed(2);
+</script>
+</body>
+</html>

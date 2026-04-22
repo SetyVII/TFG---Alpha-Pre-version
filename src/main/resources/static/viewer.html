@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PC - Pelota controlada por móvil</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 1rem;
+            line-height: 1.4;
+        }
+        #status {
+            margin-bottom: 0.7rem;
+            font-weight: bold;
+        }
+        #info {
+            margin-bottom: 0.7rem;
+            color: #334155;
+        }
+        canvas {
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            background: linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%);
+            width: min(96vw, 960px);
+            height: min(70vh, 620px);
+            display: block;
+        }
+    </style>
+</head>
+<body>
+<h1>Pantalla del PC</h1>
+<div id="status">Socket: conectando...</div>
+<div id="info">Abre <code>/mobile.html</code> en tu móvil y activa sensores.</div>
+<canvas id="stage" width="960" height="620"></canvas>
+
+<script>
+    const statusEl = document.getElementById("status");
+    const infoEl = document.getElementById("info");
+    const canvas = document.getElementById("stage");
+    const ctx = canvas.getContext("2d");
+
+    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+    const socket = new WebSocket(`${protocol}://${window.location.host}/ws/motion`);
+
+    socket.onopen = () => {
+        statusEl.textContent = "Socket: conectado";
+        socket.send(JSON.stringify({ type: "register", role: "viewer" }));
+    };
+    socket.onclose = () => statusEl.textContent = "Socket: desconectado";
+    socket.onerror = () => statusEl.textContent = "Socket: error";
+
+    const ball = {
+        x: canvas.width / 2,
+        y: canvas.height / 2,
+        radius: 22,
+        vx: 0,
+        vy: 0
+    };
+
+    const motion = {
+        tiltX: 0,
+        tiltY: 0,
+        gamma: 0,
+        beta: 0
+    };
+
+    socket.onmessage = (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            if (data.type !== "motion") return;
+            motion.tiltX = Number(data.tiltX) || 0;
+            motion.tiltY = Number(data.tiltY) || 0;
+            motion.gamma = Number(data.gamma) || 0;
+            motion.beta = Number(data.beta) || 0;
+        } catch (_) {
+            // Mensajes no JSON (ejemplo: saludo inicial) se ignoran.
+        }
+    };
+
+    let lastTs = performance.now();
+
+    function animate(ts) {
+        const dt = Math.min((ts - lastTs) / 1000, 0.04);
+        lastTs = ts;
+
+        const maxAccel = 1400;
+        const friction = 0.92;
+
+        const ax = motion.tiltX * maxAccel;
+        const ay = motion.tiltY * maxAccel;
+
+        ball.vx = (ball.vx + ax * dt) * friction;
+        ball.vy = (ball.vy + ay * dt) * friction;
+
+        ball.x += ball.vx * dt;
+        ball.y += ball.vy * dt;
+
+        const minX = ball.radius;
+        const maxX = canvas.width - ball.radius;
+        const minY = ball.radius;
+        const maxY = canvas.height - ball.radius;
+
+        if (ball.x < minX) {
+            ball.x = minX;
+            ball.vx = 0;
+        } else if (ball.x > maxX) {
+            ball.x = maxX;
+            ball.vx = 0;
+        }
+
+        if (ball.y < minY) {
+            ball.y = minY;
+            ball.vy = 0;
+        } else if (ball.y > maxY) {
+            ball.y = maxY;
+            ball.vy = 0;
+        }
+
+        draw();
+        infoEl.textContent =
+            `tiltX: ${motion.tiltX.toFixed(2)} | tiltY: ${motion.tiltY.toFixed(2)} | ` +
+            `gamma: ${motion.gamma.toFixed(1)} | beta: ${motion.beta.toFixed(1)}`;
+        requestAnimationFrame(animate);
+    }
+
+    function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        ctx.strokeStyle = "#cbd5e1";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(1, 1, canvas.width - 2, canvas.height - 2);
+
+        ctx.beginPath();
+        ctx.fillStyle = "#2563eb";
+        ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.fillStyle = "#93c5fd";
+        ctx.arc(ball.x - 7, ball.y - 7, 6, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    requestAnimationFrame(animate);
+</script>
+</body>
+</html>

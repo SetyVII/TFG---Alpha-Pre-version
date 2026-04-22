@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Móvil - Control de movimiento</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 1.25rem;
+            line-height: 1.4;
+        }
+        button {
+            width: 100%;
+            padding: 0.9rem 1rem;
+            border: 0;
+            border-radius: 10px;
+            background: #2563eb;
+            color: #fff;
+            font-size: 1rem;
+            font-weight: 600;
+        }
+        #status, #debug {
+            margin-top: 0.9rem;
+            white-space: pre-line;
+        }
+    </style>
+</head>
+<body>
+<h1>Controlador móvil</h1>
+<p>Pulsa el botón para activar acelerómetro y giroscopio.</p>
+<button id="start">Activar sensores</button>
+<button id="release" disabled style="margin-top:0.55rem;background:#0f766e;">Soltar</button>
+<button id="btnA" disabled style="margin-top:0.55rem;background:#9333ea;">Saltar (A)</button>
+<button id="btnB" disabled style="margin-top:0.55rem;background:#ea580c;">Validar (B)</button>
+<div id="status">Socket: conectando...</div>
+<div id="debug"></div>
+<div id="hint"></div>
+
+<script>
+    const startBtn = document.getElementById("start");
+    const releaseBtn = document.getElementById("release");
+    const btnA = document.getElementById("btnA");
+    const btnB = document.getElementById("btnB");
+    const statusEl = document.getElementById("status");
+    const debugEl = document.getElementById("debug");
+    const hintEl = document.getElementById("hint");
+
+    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+    const socket = new WebSocket(`${protocol}://${window.location.host}/ws/motion`);
+
+    socket.onopen = () => {
+        statusEl.textContent = "Socket: conectado";
+        socket.send(JSON.stringify({ type: "register", role: "mobile" }));
+    };
+    socket.onclose = () => statusEl.textContent = "Socket: desconectado";
+    socket.onerror = () => statusEl.textContent = "Socket: error";
+    socket.onmessage = (event) => {
+        try {
+            const msg = JSON.parse(event.data);
+            if (msg.type === "haptic" && navigator.vibrate) {
+                navigator.vibrate(Array.isArray(msg.pattern) ? msg.pattern : [90]);
+            }
+        } catch (_) {
+            // ignore non-json messages
+        }
+    };
+
+    let canSend = false;
+    let lastSent = 0;
+    let gotMotion = false;
+    let gotOrientation = false;
+    let orientation = { alpha: 0, beta: 0, gamma: 0 };
+    let acceleration = { x: 0, y: 0, z: 0 };
+
+    const isPotentiallyBlockedByHttp =
+        !window.isSecureContext &&
+        window.location.hostname !== "localhost" &&
+        window.location.hostname !== "127.0.0.1";
+
+    if (isPotentiallyBlockedByHttp) {
+        const secureUrl = `https://${window.location.hostname}:8443/mobile.html`;
+        hintEl.textContent = `Aviso: este móvil puede bloquear sensores en HTTP. Abre: ${secureUrl}`;
+    }
+
+    function sendSensorData(orientation, acceleration) {
+        if (!canSend || socket.readyState !== WebSocket.OPEN) return;
+        const now = Date.now();
+        if (now - lastSent < 35) return; // ~28 FPS
+        lastSent = now;
+
+        const gamma = orientation.gamma ?? 0; // izquierda/derecha
+        const beta = orientation.beta ?? 0;   // delante/detras
+
+        const payload = {
+            type: "motion",
+            role: "mobile",
+            tiltX: Math.max(-1, Math.min(1, gamma / 45)),
+            tiltY: Math.max(-1, Math.min(1, beta / 45)),
+            gamma,
+            beta,
+            alpha: orientation.alpha ?? 0,
+            accX: acceleration.x ?? 0,
+            accY: acceleration.y ?? 0,
+            accZ: acceleration.z ?? 0,
+            ts: now
+        };
+
+        socket.send(JSON.stringify(payload));
+        debugEl.textContent =
+            `tiltX: ${payload.tiltX.toFixed(2)}\n` +
+            `tiltY: ${payload.tiltY.toFixed(2)}\n` +
+            `gamma: ${payload.gamma.toFixed(1)}\n` +
+            `beta: ${payload.beta.toFixed(1)}`;
+    }
+
+    async function requestPermissionsIfNeeded() {
+        if (typeof DeviceMotionEvent !== "undefined" &&
+            typeof DeviceMotionEvent.requestPermission === "function") {
+            const motionPermission = await DeviceMotionEvent.requestPermission();
+            if (motionPermission !== "granted") {
+                throw new Error("Permiso de acelerómetro denegado");
+            }
+        }
+
+        if (typeof DeviceOrientationEvent !== "undefined" &&
+            typeof DeviceOrientationEvent.requestPermission === "function") {
+            const orientationPermission = await DeviceOrientationEvent.requestPermission();
+            if (orientationPermission !== "granted") {
+                throw new Error("Permiso de giroscopio denegado");
+            }
+        }
+    }
+
+    function onOrientation(event) {
+        gotOrientation = true;
+        orientation = {
+            alpha: event.alpha ?? 0,
+            beta: event.beta ?? 0,
+            gamma: event.gamma ?? 0
+        };
+        sendSensorData(orientation, acceleration);
+    }
+
+    function onMotion(event) {
+        gotMotion = true;
+        const acc = event.accelerationIncludingGravity || event.acceleration;
+        acceleration = {
+            x: acc?.x ?? 0,
+            y: acc?.y ?? 0,
+            z: acc?.z ?? 0
+        };
+        sendSensorData(orientation, acceleration);
+    }
+
+    async function startSensors() {
+        await requestPermissionsIfNeeded();
+
+        if (typeof DeviceMotionEvent === "undefined" && typeof DeviceOrientationEvent === "undefined") {
+            if (isPotentiallyBlockedByHttp) {
+                throw new Error("Sensores bloqueados en HTTP. Usa HTTPS en el puerto 8443.");
+            }
+            throw new Error("Este navegador no expone sensores de movimiento");
+        }
+
+        window.addEventListener("deviceorientation", onOrientation, { passive: true });
+        window.addEventListener("deviceorientationabsolute", onOrientation, { passive: true });
+        window.addEventListener("devicemotion", onMotion, { passive: true });
+
+        canSend = true;
+        startBtn.disabled = true;
+        startBtn.textContent = "Sensores activos";
+        releaseBtn.disabled = false;
+        btnA.disabled = false;
+        btnB.disabled = false;
+
+        setTimeout(() => {
+            if (!gotMotion && !gotOrientation) {
+                statusEl.textContent = "No llegan eventos de sensores. Revisa permisos del navegador y prueba HTTPS.";
+            }
+        }, 3000);
+    }
+
+    startBtn.addEventListener("click", async () => {
+        try {
+            await startSensors();
+        } catch (error) {
+            statusEl.textContent = `Error: ${error.message}`;
+        }
+    });
+
+    releaseBtn.addEventListener("click", () => {
+        if (socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ type: "release", role: "mobile", ts: Date.now() }));
+        }
+        if (navigator.vibrate) {
+            navigator.vibrate(35);
+        }
+    });
+
+    btnA.addEventListener("click", () => {
+        if (socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ type: "action", role: "mobile", action: "cambiar", ts: Date.now() }));
+        }
+        if (navigator.vibrate) {
+            navigator.vibrate(25);
+        }
+    });
+
+    btnB.addEventListener("click", () => {
+        if (socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ type: "action", role: "mobile", action: "validar", ts: Date.now() }));
+        }
+        if (navigator.vibrate) {
+            navigator.vibrate(25);
+        }
+    });
+</script>
+</body>
+</html>

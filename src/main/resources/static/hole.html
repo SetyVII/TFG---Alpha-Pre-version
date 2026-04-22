@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bolita al agujero</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 1rem;
+            line-height: 1.4;
+            background: #f8fafc;
+            color: #0f172a;
+        }
+        #status, #info, #level {
+            margin-bottom: 0.55rem;
+        }
+        #status {
+            font-weight: bold;
+        }
+        #stage {
+            border: 1px solid #cbd5e1;
+            border-radius: 10px;
+            width: min(96vw, 1000px);
+            height: min(72vh, 620px);
+            display: block;
+            background: #e2e8f0;
+        }
+        button {
+            margin-top: 0.6rem;
+            padding: 0.55rem 0.95rem;
+            border: 0;
+            border-radius: 8px;
+            background: #2563eb;
+            color: white;
+            font-weight: 600;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+<h1>Bolita al agujero</h1>
+<div id="status">Socket: conectando...</div>
+<div id="level"></div>
+<div id="info">Inclina el móvil para mover la bola. Teclado opcional: flechas.</div>
+<canvas id="stage" width="1000" height="620"></canvas>
+<button id="restart">Reiniciar nivel</button>
+
+<script>
+    const statusEl = document.getElementById("status");
+    const levelEl = document.getElementById("level");
+    const infoEl = document.getElementById("info");
+    const canvas = document.getElementById("stage");
+    const ctx = canvas.getContext("2d");
+    const restartBtn = document.getElementById("restart");
+
+    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+    const socket = new WebSocket(`${protocol}://${window.location.host}/ws/motion`);
+    socket.onopen = () => {
+        statusEl.textContent = "Socket: conectado";
+        socket.send(JSON.stringify({ type: "register", role: "hole-game" }));
+    };
+    socket.onclose = () => statusEl.textContent = "Socket: desconectado";
+    socket.onerror = () => statusEl.textContent = "Socket: error";
+
+    const levels = [
+        {
+            name: "Nivel 1 - Normal y simple",
+            start: { x: 90, y: 310 },
+            hole: { x: 900, y: 310, r: 26 },
+            obstacles: [
+                { x: 340, y: 220, w: 40, h: 180 },
+                { x: 610, y: 130, w: 40, h: 220 }
+            ]
+        },
+        {
+            name: "Nivel 2 - Con obstáculos",
+            start: { x: 90, y: 520 },
+            hole: { x: 900, y: 100, r: 24 },
+            obstacles: [
+                { x: 180, y: 400, w: 560, h: 28 },
+                { x: 260, y: 200, w: 28, h: 180 },
+                { x: 390, y: 80, w: 28, h: 250 },
+                { x: 520, y: 300, w: 28, h: 250 },
+                { x: 650, y: 120, w: 28, h: 210 }
+            ]
+        },
+        {
+            name: "Nivel 3 - Muchos obstáculos",
+            start: { x: 70, y: 560 },
+            hole: { x: 940, y: 70, r: 22 },
+            obstacles: [
+                { x: 130, y: 470, w: 170, h: 22 },
+                { x: 300, y: 360, w: 22, h: 160 },
+                { x: 210, y: 260, w: 250, h: 22 },
+                { x: 430, y: 160, w: 22, h: 160 },
+                { x: 370, y: 80, w: 230, h: 22 },
+                { x: 570, y: 220, w: 22, h: 170 },
+                { x: 650, y: 390, w: 180, h: 22 },
+                { x: 760, y: 250, w: 22, h: 160 },
+                { x: 830, y: 120, w: 22, h: 130 },
+                { x: 510, y: 500, w: 260, h: 22 }
+            ]
+        }
+    ];
+
+    let currentLevelIndex = 0;
+    const motion = { tiltX: 0, tiltY: 0 };
+    const keys = { left: false, right: false, up: false, down: false };
+    const ball = { x: 0, y: 0, vx: 0, vy: 0, r: 16 };
+    let finishedAll = false;
+    let lastTs = performance.now();
+
+    function loadLevel(index) {
+        currentLevelIndex = index;
+        const level = levels[currentLevelIndex];
+        ball.x = level.start.x;
+        ball.y = level.start.y;
+        ball.vx = 0;
+        ball.vy = 0;
+        finishedAll = false;
+        levelEl.textContent = level.name;
+        infoEl.textContent = "Inclina el móvil para mover la bola. Teclado opcional: flechas.";
+    }
+
+    function resetLevel() {
+        loadLevel(currentLevelIndex);
+    }
+
+    function nextLevel() {
+        if (currentLevelIndex < levels.length - 1) {
+            loadLevel(currentLevelIndex + 1);
+        } else {
+            finishedAll = true;
+            infoEl.textContent = "Completaste los 3 niveles. Pulsa Reiniciar nivel para jugar otra vez.";
+        }
+    }
+
+    socket.onmessage = (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            if (data.type !== "motion") return;
+            motion.tiltX = Number(data.tiltX) || 0;
+            motion.tiltY = Number(data.tiltY) || 0;
+        } catch (_) {
+            // ignore non-json messages
+        }
+    };
+
+    function clamp(n, min, max) {
+        return Math.max(min, Math.min(max, n));
+    }
+
+    function resolveRectCollision(rect) {
+        const nearestX = clamp(ball.x, rect.x, rect.x + rect.w);
+        const nearestY = clamp(ball.y, rect.y, rect.y + rect.h);
+        const dx = ball.x - nearestX;
+        const dy = ball.y - nearestY;
+        const dist2 = dx * dx + dy * dy;
+        const rr = ball.r * ball.r;
+        if (dist2 >= rr) return;
+
+        const dist = Math.sqrt(Math.max(0.0001, dist2));
+        const overlap = ball.r - dist;
+        const nx = dx / dist;
+        const ny = dy / dist;
+
+        ball.x += nx * overlap;
+        ball.y += ny * overlap;
+
+        const vn = ball.vx * nx + ball.vy * ny;
+        if (vn < 0) {
+            const restitution = 0.2;
+            ball.vx -= (1 + restitution) * vn * nx;
+            ball.vy -= (1 + restitution) * vn * ny;
+        }
+    }
+
+    function updatePhysics(dt) {
+        if (finishedAll) return;
+
+        const accelScale = 1350;
+        const keyAccel = 1200;
+        let ax = motion.tiltX * accelScale;
+        let ay = motion.tiltY * accelScale;
+
+        if (keys.left) ax -= keyAccel;
+        if (keys.right) ax += keyAccel;
+        if (keys.up) ay -= keyAccel;
+        if (keys.down) ay += keyAccel;
+
+        ball.vx += ax * dt;
+        ball.vy += ay * dt;
+
+        const damping = 0.94;
+        ball.vx *= damping;
+        ball.vy *= damping;
+
+        ball.x += ball.vx * dt;
+        ball.y += ball.vy * dt;
+
+        if (ball.x < ball.r) {
+            ball.x = ball.r;
+            ball.vx = Math.max(0, ball.vx) * 0.35;
+        } else if (ball.x > canvas.width - ball.r) {
+            ball.x = canvas.width - ball.r;
+            ball.vx = Math.min(0, ball.vx) * 0.35;
+        }
+
+        if (ball.y < ball.r) {
+            ball.y = ball.r;
+            ball.vy = Math.max(0, ball.vy) * 0.35;
+        } else if (ball.y > canvas.height - ball.r) {
+            ball.y = canvas.height - ball.r;
+            ball.vy = Math.min(0, ball.vy) * 0.35;
+        }
+
+        const level = levels[currentLevelIndex];
+        for (const rect of level.obstacles) {
+            resolveRectCollision(rect);
+        }
+
+        const hx = level.hole.x;
+        const hy = level.hole.y;
+        const dr = level.hole.r - ball.r * 0.35;
+        const ddx = ball.x - hx;
+        const ddy = ball.y - hy;
+        if (ddx * ddx + ddy * ddy < dr * dr && Math.hypot(ball.vx, ball.vy) < 160) {
+            nextLevel();
+        }
+    }
+
+    function drawLevel() {
+        const level = levels[currentLevelIndex];
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        ctx.fillStyle = "#dbeafe";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        for (const rect of level.obstacles) {
+            ctx.fillStyle = "#334155";
+            ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+        }
+
+        ctx.beginPath();
+        ctx.fillStyle = "#020617";
+        ctx.arc(level.hole.x, level.hole.y, level.hole.r, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.fillStyle = "#2563eb";
+        ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.fillStyle = "#93c5fd";
+        ctx.arc(ball.x - 5, ball.y - 5, 5, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    function frame(ts) {
+        const dt = Math.min((ts - lastTs) / 1000, 0.04);
+        lastTs = ts;
+        updatePhysics(dt);
+        drawLevel();
+        requestAnimationFrame(frame);
+    }
+
+    window.addEventListener("keydown", (e) => {
+        if (e.key === "ArrowLeft") keys.left = true;
+        if (e.key === "ArrowRight") keys.right = true;
+        if (e.key === "ArrowUp") keys.up = true;
+        if (e.key === "ArrowDown") keys.down = true;
+    });
+    window.addEventListener("keyup", (e) => {
+        if (e.key === "ArrowLeft") keys.left = false;
+        if (e.key === "ArrowRight") keys.right = false;
+        if (e.key === "ArrowUp") keys.up = false;
+        if (e.key === "ArrowDown") keys.down = false;
+    });
+
+    restartBtn.addEventListener("click", resetLevel);
+
+    loadLevel(0);
+    requestAnimationFrame(frame);
+</script>
+</body>
+</html>

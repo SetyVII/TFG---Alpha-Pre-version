@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fishing 3D Motion</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: Arial, sans-serif; background: #9fd4ff; }
+        #hud {
+            position: fixed;
+            left: 10px;
+            top: 10px;
+            color: #0f172a;
+            background: rgba(255, 255, 255, 0.82);
+            border-radius: 10px;
+            padding: 8px 12px;
+            line-height: 1.4;
+            z-index: 2;
+            max-width: 470px;
+        }
+        #help {
+            position: fixed;
+            right: 10px;
+            bottom: 10px;
+            color: #0f172a;
+            background: rgba(255, 255, 255, 0.82);
+            border-radius: 10px;
+            padding: 8px 12px;
+            line-height: 1.35;
+            z-index: 2;
+            max-width: 520px;
+        }
+    </style>
+</head>
+<body>
+<div id="hud">
+    <div id="socket">Socket: conectando...</div>
+    <div id="state">Estado: listo</div>
+    <div id="angles">Yaw/Pitch: 0 / 0</div>
+    <div id="power">Potencia lanzamiento: 0</div>
+    <div id="line">Linea: 0</div>
+    <div id="score">Pescados: 0</div>
+</div>
+<div id="help">
+    Control movil: usa <b>/mobile.html</b>.<br>
+    <b>Down</b> levanta/recoge, <b>Up</b> lanza, <b>Left/Right</b> gira caña.<br>
+    Adelante/atras del movil tambien inclina la caña (pitch).<br>
+    Se usa orientacion + acelerometro para controlar y calcular potencia.<br>
+    Boton <b>Soltar</b> del movil: suelta linea/pez.
+</div>
+
+<script type="module">
+    import * as THREE from "https://unpkg.com/three@0.166.1/build/three.module.js";
+
+    const socketEl = document.getElementById("socket");
+    const stateEl = document.getElementById("state");
+    const anglesEl = document.getElementById("angles");
+    const powerEl = document.getElementById("power");
+    const lineEl = document.getElementById("line");
+    const scoreEl = document.getElementById("score");
+
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.Fog(0xaed8ff, 25, 130);
+
+    const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 400);
+    camera.position.set(0, 14, 28);
+    camera.lookAt(0, 2, 8);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    document.body.appendChild(renderer.domElement);
+
+    const hemi = new THREE.HemisphereLight(0xb7d7ff, 0x4b5d62, 1.05);
+    scene.add(hemi);
+    const sun = new THREE.DirectionalLight(0xffffff, 1.0);
+    sun.position.set(8, 18, 12);
+    sun.castShadow = true;
+    scene.add(sun);
+
+    const waterGeom = new THREE.PlaneGeometry(220, 220, 40, 40);
+    const waterMat = new THREE.MeshStandardMaterial({
+        color: 0x4f93bf,
+        roughness: 0.22,
+        metalness: 0.05
+    });
+    const water = new THREE.Mesh(waterGeom, waterMat);
+    water.rotation.x = -Math.PI / 2;
+    water.position.y = 0;
+    water.receiveShadow = true;
+    scene.add(water);
+
+    const shore = new THREE.Mesh(
+        new THREE.BoxGeometry(42, 1.5, 34),
+        new THREE.MeshStandardMaterial({ color: 0x8a6a49, roughness: 0.95 })
+    );
+    shore.position.set(-23, 0.75, -16);
+    shore.receiveShadow = true;
+    scene.add(shore);
+
+    const rodBase = new THREE.Vector3(-14, 2.8, -5);
+    const rodState = {
+        yaw: 0,
+        pitch: -20,
+        targetYaw: 0,
+        targetPitch: -20,
+        len: 10.5
+    };
+
+    const rodLineGeom = new THREE.BufferGeometry().setFromPoints([rodBase, rodBase.clone().add(new THREE.Vector3(0, 4, 2))]);
+    const rodLine = new THREE.Line(rodLineGeom, new THREE.LineBasicMaterial({ color: 0x2b1b15 }));
+    scene.add(rodLine);
+
+    const castLineGeom = new THREE.BufferGeometry().setFromPoints([rodBase, rodBase]);
+    const castLine = new THREE.Line(castLineGeom, new THREE.LineBasicMaterial({ color: 0xffffff }));
+    scene.add(castLine);
+
+    const bobber = {
+        state: "ready", // ready, casting, floating, hooked
+        pos: rodBase.clone(),
+        vel: new THREE.Vector3(),
+        radius: 0.45,
+        lineLen: 3.5
+    };
+    const bobberMesh = new THREE.Mesh(
+        new THREE.SphereGeometry(bobber.radius, 20, 20),
+        new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4 })
+    );
+    bobberMesh.castShadow = true;
+    scene.add(bobberMesh);
+
+    const bobberTop = new THREE.Mesh(
+        new THREE.SphereGeometry(bobber.radius * 0.58, 16, 16),
+        new THREE.MeshStandardMaterial({ color: 0xff4d4d })
+    );
+    bobberTop.position.y = 0.25;
+    bobberMesh.add(bobberTop);
+
+    const fishList = [];
+    let caught = 0;
+    let castCharge = 0;
+    let castPower = 0;
+    let lastHaptic = 0;
+    let prevMotionTs = 0;
+    let prevTiltY = 0;
+    let upVelocity = 0;
+    let downActive = false;
+
+    const world = {
+        gravity: new THREE.Vector3(0, -16, 0),
+        wind: new THREE.Vector3(0.9, 0, 0.35),
+        waterLevel: 0.3
+    };
+
+    function spawnFish(count = 16) {
+        for (const f of fishList) scene.remove(f.mesh);
+        fishList.length = 0;
+        for (let i = 0; i < count; i++) {
+            const group = new THREE.Group();
+            const body = new THREE.Mesh(
+                new THREE.SphereGeometry(0.75, 10, 10),
+                new THREE.MeshStandardMaterial({ color: 0x355a84, roughness: 0.7 })
+            );
+            body.scale.set(1.6, 0.8, 0.8);
+            const tail = new THREE.Mesh(
+                new THREE.ConeGeometry(0.35, 0.9, 7),
+                new THREE.MeshStandardMaterial({ color: 0x3f709f, roughness: 0.7 })
+            );
+            tail.rotation.z = Math.PI / 2;
+            tail.position.x = -1.2;
+            group.add(body, tail);
+            group.position.set(Math.random() * 45 - 5, -0.8 - Math.random() * 3.2, Math.random() * 40 + 3);
+            scene.add(group);
+
+            fishList.push({
+                mesh: group,
+                vel: new THREE.Vector3((Math.random() - 0.5) * 5, 0, (Math.random() - 0.5) * 3),
+                hooked: false,
+                pull: Math.random() * 6 + 3
+            });
+        }
+    }
+
+    function rodTip() {
+        const yawRad = THREE.MathUtils.degToRad(rodState.yaw);
+        const pitchRad = THREE.MathUtils.degToRad(rodState.pitch);
+        const dir = new THREE.Vector3(
+            Math.sin(yawRad) * Math.cos(pitchRad),
+            Math.sin(pitchRad),
+            Math.cos(yawRad) * Math.cos(pitchRad)
+        ).normalize();
+        return rodBase.clone().addScaledVector(dir, rodState.len);
+    }
+
+    function setBobberReady() {
+        const tip = rodTip();
+        bobber.pos.copy(tip);
+        bobber.vel.set(0, 0, 0);
+        bobber.state = "ready";
+        bobber.lineLen = 3.8;
+        castCharge = 0;
+    }
+
+    function cast(powerFactor) {
+        const tip = rodTip();
+        const yawRad = THREE.MathUtils.degToRad(rodState.yaw);
+        const pitchRad = THREE.MathUtils.degToRad(rodState.pitch);
+        const dir = new THREE.Vector3(
+            Math.sin(yawRad) * Math.cos(pitchRad),
+            Math.sin(pitchRad),
+            Math.cos(yawRad) * Math.cos(pitchRad)
+        ).normalize();
+        const speed = 8 + Math.min(23, powerFactor * 16);
+        bobber.pos.copy(tip);
+        bobber.vel.copy(dir.multiplyScalar(speed));
+        bobber.state = "casting";
+        bobber.lineLen = 5.5;
+        castPower = powerFactor;
+        stateEl.textContent = "Estado: lanzando";
+    }
+
+    function releaseAction() {
+        bobber.lineLen = Math.min(22, bobber.lineLen + 4.5);
+        const hooked = fishList.find(f => f.hooked);
+        if (hooked) {
+            hooked.hooked = false;
+            stateEl.textContent = "Estado: pez soltado";
+        } else {
+            stateEl.textContent = "Estado: linea soltada";
+        }
+    }
+
+    function updateRod(dt) {
+        const blend = Math.min(1, dt * 6.5);
+        rodState.yaw = THREE.MathUtils.lerp(rodState.yaw, rodState.targetYaw, blend);
+        rodState.pitch = THREE.MathUtils.lerp(rodState.pitch, rodState.targetPitch, blend);
+
+        const tip = rodTip();
+        rodLine.geometry.setFromPoints([rodBase, tip]);
+    }
+
+    function updateBobber(dt) {
+        const tip = rodTip();
+
+        if (bobber.state === "ready") {
+            bobber.pos.copy(tip);
+            bobber.lineLen = 3.5 + castCharge * 3;
+            return;
+        }
+
+        bobber.vel.addScaledVector(world.gravity, dt);
+        bobber.vel.addScaledVector(world.wind, dt * 0.55);
+        bobber.vel.multiplyScalar(0.995);
+        bobber.pos.addScaledVector(bobber.vel, dt);
+
+        if (bobber.state === "casting" && bobber.pos.y <= world.waterLevel) {
+            bobber.state = "floating";
+            bobber.pos.y = world.waterLevel;
+            bobber.vel.y = 0;
+            bobber.vel.multiplyScalar(0.52);
+            stateEl.textContent = "Estado: flotando";
+        }
+
+        if (bobber.state === "floating" || bobber.state === "hooked") {
+            const buoy = (world.waterLevel - bobber.pos.y) * 5.5;
+            bobber.vel.y += buoy * dt;
+            bobber.vel.multiplyScalar(0.985);
+        }
+
+        const toBobber = bobber.pos.clone().sub(tip);
+        const dist = toBobber.length();
+        if (dist > bobber.lineLen) {
+            toBobber.normalize();
+            bobber.pos.copy(tip).addScaledVector(toBobber, bobber.lineLen);
+            const normalSpeed = bobber.vel.dot(toBobber);
+            if (normalSpeed > 0) bobber.vel.addScaledVector(toBobber, -normalSpeed * 0.9);
+        }
+
+        bobberMesh.position.copy(bobber.pos);
+        castLine.geometry.setFromPoints([tip, bobber.pos]);
+    }
+
+    function updateFish(dt, now) {
+        let closest = Infinity;
+        let hookedFish = fishList.find(f => f.hooked);
+
+        for (const f of fishList) {
+            if (f.hooked) {
+                const target = bobber.pos.clone().add(new THREE.Vector3(0, -0.5, 0));
+                f.mesh.position.lerp(target, Math.min(1, dt * 4.5));
+                bobber.vel.x += (Math.random() - 0.5) * f.pull * dt;
+                bobber.vel.z += (Math.random() - 0.5) * f.pull * dt;
+                continue;
+            }
+
+            f.mesh.position.addScaledVector(f.vel, dt);
+            if (f.mesh.position.z < 2 || f.mesh.position.z > 48) f.vel.z *= -1;
+            if (f.mesh.position.x < -12 || f.mesh.position.x > 40) f.vel.x *= -1;
+            f.mesh.lookAt(f.mesh.position.clone().add(f.vel));
+
+            const d = f.mesh.position.distanceTo(bobber.pos);
+            closest = Math.min(closest, d);
+            if (bobber.state === "floating" && d < 1.4 && Math.random() < 0.018) {
+                f.hooked = true;
+                bobber.state = "hooked";
+                stateEl.textContent = "Estado: pez enganchado, recoge!";
+                hookedFish = f;
+            }
+        }
+
+        if (closest < 4.4 && now - lastHaptic > 700) {
+            sendHaptic([60, 40, 60]);
+            lastHaptic = now;
+        }
+        if (hookedFish && now - lastHaptic > 500) {
+            sendHaptic([90]);
+            lastHaptic = now;
+        }
+
+        const nearShore = bobber.pos.distanceTo(rodBase) < 4.5;
+        if (nearShore && bobber.state === "hooked" && hookedFish) {
+            hookedFish.hooked = false;
+            scene.remove(hookedFish.mesh);
+            fishList.splice(fishList.indexOf(hookedFish), 1);
+            caught++;
+            scoreEl.textContent = `Pescados: ${caught}`;
+            stateEl.textContent = "Estado: capturado";
+            setBobberReady();
+            if (fishList.length < 8) spawnFish(8);
+        } else if (nearShore && bobber.state === "floating") {
+            setBobberReady();
+        }
+    }
+
+    function onMotionData(data) {
+        const t = Number(data.ts) || Date.now();
+        const tiltX = Number(data.tiltX) || 0;
+        const tiltY = Number(data.tiltY) || 0;
+        const accX = Number(data.accX) || 0;
+        const accY = Number(data.accY) || 0;
+        const beta = Number(data.beta) || 0;
+        const gamma = Number(data.gamma) || 0;
+
+        // Mezcla orientacion + acelerometro para control completo
+        rodState.targetYaw = THREE.MathUtils.clamp(tiltX * 38 + gamma * 0.12 + accX * 1.8, -58, 58);
+        rodState.targetPitch = THREE.MathUtils.clamp(-22 + tiltY * 40 + beta * 0.06 + accY * 1.7, -68, 14);
+
+        if (prevMotionTs > 0) {
+            const dt = Math.max(1, t - prevMotionTs);
+            const dTiltY = (tiltY - prevTiltY) / dt;
+            upVelocity = Math.max(0, (-dTiltY * 900) + (-accY * 0.7));
+        }
+        prevMotionTs = t;
+        prevTiltY = tiltY;
+
+        const upGesture = tiltY < -0.35 || accY < -5.2;
+        const downGesture = tiltY > 0.34 || accY > 4.6;
+
+        if (downGesture) downActive = true;
+        else downActive = false;
+
+        if (downActive) {
+            castCharge = Math.min(1.35, castCharge + 0.032);
+            bobber.lineLen = Math.max(2.7, bobber.lineLen - 0.14);
+        }
+
+        if (upGesture && bobber.state === "ready") {
+            const velocityFactor = Math.min(1.35, upVelocity / 10.5);
+            cast(0.28 + castCharge + velocityFactor);
+            castCharge = 0;
+        }
+    }
+
+    const keyState = { left: false, right: false, up: false, down: false };
+    function applyKeyboard(dt) {
+        if (keyState.left) rodState.targetYaw -= 48 * dt;
+        if (keyState.right) rodState.targetYaw += 48 * dt;
+        rodState.targetYaw = THREE.MathUtils.clamp(rodState.targetYaw, -58, 58);
+
+        if (keyState.down) {
+            castCharge = Math.min(1.35, castCharge + dt * 1.25);
+            bobber.lineLen = Math.max(2.7, bobber.lineLen - dt * 5.8);
+        }
+        if (keyState.up && bobber.state === "ready") {
+            cast(0.35 + castCharge);
+            castCharge = 0;
+            keyState.up = false;
+        }
+    }
+
+    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+    const socket = new WebSocket(`${protocol}://${window.location.host}/ws/motion`);
+    socket.onopen = () => {
+        socketEl.textContent = "Socket: conectado";
+        socket.send(JSON.stringify({ type: "register", role: "fishing-3d" }));
+    };
+    socket.onclose = () => socketEl.textContent = "Socket: desconectado";
+    socket.onerror = () => socketEl.textContent = "Socket: error";
+    socket.onmessage = (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            if (data.type === "motion") onMotionData(data);
+            if (data.type === "release") releaseAction();
+        } catch (_) {
+            // ignore non-json
+        }
+    };
+
+    function sendHaptic(pattern) {
+        if (socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ type: "haptic", pattern, ts: Date.now() }));
+        }
+    }
+
+    window.addEventListener("keydown", (e) => {
+        if (e.key === "ArrowLeft") keyState.left = true;
+        if (e.key === "ArrowRight") keyState.right = true;
+        if (e.key === "ArrowDown") keyState.down = true;
+        if (e.key === "ArrowUp") keyState.up = true;
+    });
+    window.addEventListener("keyup", (e) => {
+        if (e.key === "ArrowLeft") keyState.left = false;
+        if (e.key === "ArrowRight") keyState.right = false;
+        if (e.key === "ArrowDown") keyState.down = false;
+        if (e.key === "ArrowUp") keyState.up = false;
+    });
+
+    function animate(now) {
+        const t = now * 0.001;
+        const dt = Math.min(0.033, animate.prev ? t - animate.prev : 0.016);
+        animate.prev = t;
+
+        applyKeyboard(dt);
+        updateRod(dt);
+        updateBobber(dt);
+        updateFish(dt, now);
+
+        // Olas suaves (deformacion Y)
+        const pos = water.geometry.attributes.position;
+        for (let i = 0; i < pos.count; i++) {
+            const x = pos.getX(i);
+            const z = pos.getY(i); // plane rotated later, Y attribute used as local z
+            const wave = Math.sin((x * 0.12) + t * 1.7) * 0.08 + Math.cos((z * 0.1) + t * 1.2) * 0.05;
+            pos.setZ(i, wave);
+        }
+        pos.needsUpdate = true;
+        water.geometry.computeVertexNormals();
+
+        anglesEl.textContent = `Yaw/Pitch: ${rodState.yaw.toFixed(1)} / ${rodState.pitch.toFixed(1)}`;
+        powerEl.textContent = `Potencia lanzamiento: ${(castPower + upVelocity * 0.05).toFixed(2)} (vel-up ${upVelocity.toFixed(2)})`;
+        lineEl.textContent = `Linea: ${bobber.lineLen.toFixed(2)} | Estado bobber: ${bobber.state}`;
+
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+    }
+
+    function onResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+    window.addEventListener("resize", onResize);
+
+    spawnFish();
+    setBobberReady();
+    requestAnimationFrame(animate);
+</script>
+</body>
+</html>

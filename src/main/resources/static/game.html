@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Project Reincarnation Space</title>
+    <style>
+        :root { color-scheme: dark; }
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: radial-gradient(circle at 20% 20%, #20263a 0%, #07090f 45%, #030407 100%);
+            font-family: "Segoe UI", Arial, sans-serif;
+        }
+        #hud {
+            position: fixed;
+            left: 12px;
+            top: 10px;
+            color: #d8e6ff;
+            text-shadow: 0 0 8px rgba(64, 156, 255, 0.45);
+            z-index: 2;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+        #phase-message {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #f2e9ce;
+            text-transform: uppercase;
+            letter-spacing: 3px;
+            font-size: 30px;
+            opacity: 0;
+            transition: opacity 0.8s ease;
+            text-shadow: 0 0 12px rgba(255, 235, 190, 0.55);
+            z-index: 2;
+            pointer-events: none;
+        }
+        #rhythm-ui {
+            position: fixed;
+            left: 50%;
+            bottom: 11%;
+            transform: translateX(-50%);
+            display: none;
+            text-align: center;
+            z-index: 2;
+            color: #ebe6d2;
+        }
+        #rhythm-ui .hint {
+            margin-bottom: 6px;
+            letter-spacing: 2px;
+            font-size: 12px;
+            opacity: 0.88;
+        }
+        .arrow-wrap {
+            display: flex;
+            gap: 28px;
+            justify-content: center;
+        }
+        .arrow {
+            width: 82px;
+            height: 82px;
+            border: 1px solid #7c7766;
+            border-radius: 10px;
+            display: grid;
+            place-items: center;
+            font-size: 36px;
+            color: rgba(235, 230, 210, 0.45);
+            background: rgba(32, 28, 20, 0.38);
+            transition: all 0.15s ease;
+        }
+        .arrow.active {
+            color: #ff8f7a;
+            border-color: #ff8f7a;
+            box-shadow: 0 0 16px rgba(255, 143, 122, 0.55);
+            transform: scale(1.12);
+        }
+        #overlay {
+            position: fixed;
+            inset: 0;
+            display: grid;
+            place-items: center;
+            background: rgba(2, 4, 12, 0.72);
+            z-index: 3;
+        }
+        #panel {
+            max-width: 760px;
+            padding: 20px 24px;
+            border: 1px solid #3c4f7a;
+            border-radius: 14px;
+            background: rgba(14, 19, 36, 0.92);
+            color: #e9f0ff;
+        }
+        h1 { margin: 0 0 10px; font-size: 28px; letter-spacing: 1px; }
+        p { margin: 8px 0; color: #bfd2ff; }
+        button {
+            margin-top: 10px;
+            padding: 10px 16px;
+            border: 0;
+            border-radius: 8px;
+            background: #3a7dff;
+            color: #fff;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+        }
+    </style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="hud">
+    <div id="score">Score: 0</div>
+    <div id="hp">HP: 100</div>
+    <div id="combo">Combo: x1</div>
+    <div id="beat">Beat: --</div>
+</div>
+<div id="overlay">
+    <div id="panel">
+        <h1>Project Reincarnation Space</h1>
+        <p>Shooter original estilo sci-fi. Sin contenido de franquicias externas.</p>
+        <p>PC: WASD/Flechas para mover. Disparo automatico.</p>
+        <p>Movil: abre <code>/mobile.html</code> y en <code>/mapper.html</code> carga <code>/game.html</code>.</p>
+        <p>Musica procedural sincronizada al ritmo (120 BPM).</p>
+        <button id="start">Iniciar mision</button>
+    </div>
+</div>
+<div id="phase-message">Phase 1: Entry</div>
+<div id="rhythm-ui">
+    <div class="hint">SYNC WINDOW (LEFT / RIGHT)</div>
+    <div class="arrow-wrap">
+        <div id="arrow-left" class="arrow">◄</div>
+        <div id="arrow-right" class="arrow">►</div>
+    </div>
+</div>
+
+<script>
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+
+    const overlay = document.getElementById("overlay");
+    const startBtn = document.getElementById("start");
+    const scoreEl = document.getElementById("score");
+    const hpEl = document.getElementById("hp");
+    const comboEl = document.getElementById("combo");
+    const beatEl = document.getElementById("beat");
+    const phaseMessageEl = document.getElementById("phase-message");
+    const rhythmUiEl = document.getElementById("rhythm-ui");
+    const arrowLeftEl = document.getElementById("arrow-left");
+    const arrowRightEl = document.getElementById("arrow-right");
+
+    const state = {
+        running: false,
+        width: 0,
+        height: 0,
+        time: 0,
+        score: 0,
+        hp: 100,
+        combo: 1,
+        beatIndex: 0,
+        lastHitTime: 0,
+        phase: 1,
+        rhythmExpected: null,
+        rhythmWindowUntil: 0
+    };
+
+    const keys = new Set();
+    const stars = [];
+    const bullets = [];
+    const enemies = [];
+    const particles = [];
+
+    const player = {
+        x: 0, y: 0, r: 16, speed: 460,
+        cooldown: 0
+    };
+
+    let audioCtx = null;
+    let nextBeatAt = 0;
+    let beatTimer = null;
+    const bpm = 120;
+    const beatInterval = 60 / bpm;
+    const bass = [73.42, 82.41, 92.5, 110.0, 98.0, 82.41, 73.42, 65.41];
+    const lead = [293.66, 329.63, 392.0, 440.0, 392.0, 329.63, 293.66, 246.94];
+
+    function resize() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        state.width = canvas.width;
+        state.height = canvas.height;
+    }
+
+    function setupStars() {
+        stars.length = 0;
+        for (let i = 0; i < 180; i++) {
+            stars.push({
+                x: Math.random() * state.width,
+                y: Math.random() * state.height,
+                z: Math.random() * 1.2 + 0.25
+            });
+        }
+    }
+
+    function resetGame() {
+        state.time = 0;
+        state.score = 0;
+        state.hp = 100;
+        state.combo = 1;
+        state.beatIndex = 0;
+        state.lastHitTime = 0;
+        state.phase = 1;
+        state.rhythmExpected = null;
+        state.rhythmWindowUntil = 0;
+        bullets.length = 0;
+        enemies.length = 0;
+        particles.length = 0;
+        player.x = state.width / 2;
+        player.y = state.height * 0.82;
+        player.cooldown = 0;
+        setupStars();
+        updateHud();
+        showPhaseMessage("Phase 1: Atmospheric Entry");
+    }
+
+    function updateHud() {
+        scoreEl.textContent = `Score: ${Math.floor(state.score)}`;
+        hpEl.textContent = `HP: ${Math.max(0, Math.floor(state.hp))}`;
+        comboEl.textContent = `Combo: x${state.combo.toFixed(1)}`;
+        beatEl.textContent = `Beat: ${state.beatIndex % 8} | Phase ${state.phase}`;
+    }
+
+    function spawnEnemyByBeat() {
+        const lane = Math.floor(Math.random() * 7) + 1;
+        const x = (state.width / 8) * lane;
+        let speed = 90 + Math.random() * 120 + state.time * 1.2;
+        let hp = 1 + Math.floor(Math.min(3, state.time / 35));
+        let kind = Math.random() < 0.35 ? "sine" : "line";
+        if (state.phase === 2) {
+            speed *= 1.15;
+            if (Math.random() < 0.35) kind = "drifter";
+        } else if (state.phase === 3) {
+            speed *= 1.35;
+            hp += 1;
+            if (Math.random() < 0.45) kind = "charger";
+        }
+        enemies.push({
+            x, y: -30, r: 16 + hp * 2, hp, speed, kind,
+            phase: Math.random() * Math.PI * 2
+        });
+    }
+
+    function createExplosion(x, y, color, amount) {
+        for (let i = 0; i < amount; i++) {
+            const a = Math.random() * Math.PI * 2;
+            const s = Math.random() * 220 + 40;
+            particles.push({
+                x, y,
+                vx: Math.cos(a) * s,
+                vy: Math.sin(a) * s,
+                life: Math.random() * 0.6 + 0.25,
+                ttl: Math.random() * 0.6 + 0.25,
+                color
+            });
+        }
+    }
+
+    function damagePlayer(amount) {
+        state.hp -= amount;
+        state.combo = 1;
+        state.lastHitTime = state.time;
+        createExplosion(player.x, player.y, "#ff5b8a", 18);
+        if (state.hp <= 0) {
+            state.hp = 0;
+            stopGame();
+        }
+    }
+
+    function stopGame() {
+        state.running = false;
+        if (beatTimer) {
+            clearInterval(beatTimer);
+            beatTimer = null;
+        }
+        overlay.style.display = "grid";
+        document.getElementById("panel").innerHTML = `
+            <h1>Mision finalizada</h1>
+            <p>Score final: ${Math.floor(state.score)}</p>
+            <p>Pulsa para reiniciar.</p>
+            <button id="restart">Reintentar</button>
+        `;
+        document.getElementById("restart").addEventListener("click", startGame);
+        rhythmUiEl.style.display = "none";
+    }
+
+    function shoot() {
+        bullets.push({
+            x: player.x,
+            y: player.y - player.r - 2,
+            vx: 0,
+            vy: -700,
+            r: 4
+        });
+    }
+
+    function updatePlayer(dt) {
+        const left = keys.has("ArrowLeft") || keys.has("a") || keys.has("A");
+        const right = keys.has("ArrowRight") || keys.has("d") || keys.has("D");
+        const up = keys.has("ArrowUp") || keys.has("w") || keys.has("W");
+        const down = keys.has("ArrowDown") || keys.has("s") || keys.has("S");
+
+        const dx = (right ? 1 : 0) - (left ? 1 : 0);
+        const dy = (down ? 1 : 0) - (up ? 1 : 0);
+        const len = Math.hypot(dx, dy) || 1;
+
+        player.x += (dx / len) * player.speed * dt;
+        player.y += (dy / len) * player.speed * dt;
+        player.x = Math.max(player.r, Math.min(state.width - player.r, player.x));
+        player.y = Math.max(player.r, Math.min(state.height - player.r, player.y));
+
+        player.cooldown -= dt;
+        if (player.cooldown <= 0) {
+            shoot();
+            player.cooldown = 0.13;
+        }
+    }
+
+    function updateBullets(dt) {
+        for (let i = bullets.length - 1; i >= 0; i--) {
+            const b = bullets[i];
+            b.x += b.vx * dt;
+            b.y += b.vy * dt;
+            if (b.y < -20) bullets.splice(i, 1);
+        }
+    }
+
+    function updateEnemies(dt) {
+        for (let i = enemies.length - 1; i >= 0; i--) {
+            const e = enemies[i];
+            e.y += e.speed * dt;
+            if (e.kind === "sine") {
+                e.phase += dt * 3;
+                e.x += Math.sin(e.phase) * 80 * dt;
+            } else if (e.kind === "drifter") {
+                e.phase += dt * 2.4;
+                e.x += Math.sin(e.phase * 1.8) * 130 * dt;
+                e.y += Math.cos(e.phase) * 20 * dt;
+            } else if (e.kind === "charger") {
+                if (!e.locked) {
+                    e.locked = true;
+                    e.dirX = (player.x - e.x) * 0.0045;
+                    e.dirY = 1;
+                }
+                e.x += e.dirX * e.speed * dt * 1.45;
+            }
+
+            const distToPlayer = Math.hypot(e.x - player.x, e.y - player.y);
+            if (distToPlayer < e.r + player.r - 2) {
+                damagePlayer(16);
+                createExplosion(e.x, e.y, "#ff8792", 24);
+                enemies.splice(i, 1);
+                continue;
+            }
+
+            if (e.y > state.height + 40) {
+                enemies.splice(i, 1);
+                damagePlayer(6);
+            }
+        }
+    }
+
+    function updateCollisions() {
+        for (let i = enemies.length - 1; i >= 0; i--) {
+            const e = enemies[i];
+            for (let j = bullets.length - 1; j >= 0; j--) {
+                const b = bullets[j];
+                const d = Math.hypot(e.x - b.x, e.y - b.y);
+                if (d < e.r + b.r) {
+                    bullets.splice(j, 1);
+                    e.hp -= 1;
+                    createExplosion(b.x, b.y, "#7cc3ff", 6);
+                    if (e.hp <= 0) {
+                        enemies.splice(i, 1);
+                        createExplosion(e.x, e.y, "#78ffd6", 16);
+                        state.combo = Math.min(7.5, state.combo + 0.15);
+                        state.score += 100 * state.combo;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    function updateParticles(dt) {
+        for (let i = particles.length - 1; i >= 0; i--) {
+            const p = particles[i];
+            p.life -= dt;
+            p.x += p.vx * dt;
+            p.y += p.vy * dt;
+            p.vx *= 0.93;
+            p.vy *= 0.93;
+            if (p.life <= 0) particles.splice(i, 1);
+        }
+    }
+
+    function drawBackground(dt) {
+        ctx.fillStyle = "rgba(6,10,20,0.44)";
+        ctx.fillRect(0, 0, state.width, state.height);
+
+        for (const s of stars) {
+            s.y += 38 * s.z * dt;
+            if (s.y > state.height + 2) {
+                s.y = -2;
+                s.x = Math.random() * state.width;
+            }
+            ctx.fillStyle = `rgba(170, 215, 255, ${0.30 + s.z * 0.45})`;
+            ctx.fillRect(s.x, s.y, s.z * 1.8, s.z * 1.8);
+        }
+    }
+
+    function drawPlayer() {
+        ctx.save();
+        ctx.translate(player.x, player.y);
+        ctx.beginPath();
+        ctx.moveTo(0, -20);
+        ctx.lineTo(13, 14);
+        ctx.lineTo(0, 8);
+        ctx.lineTo(-13, 14);
+        ctx.closePath();
+        ctx.fillStyle = "#f4f7ff";
+        ctx.shadowColor = "#7ab8ff";
+        ctx.shadowBlur = 18;
+        ctx.fill();
+        ctx.restore();
+    }
+
+    function drawBullets() {
+        for (const b of bullets) {
+            ctx.beginPath();
+            ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+            ctx.fillStyle = "#9fd9ff";
+            ctx.shadowColor = "#8fd8ff";
+            ctx.shadowBlur = 10;
+            ctx.fill();
+        }
+    }
+
+    function drawEnemies() {
+        for (const e of enemies) {
+            ctx.beginPath();
+            ctx.arc(e.x, e.y, e.r, 0, Math.PI * 2);
+            if (e.kind === "sine") ctx.fillStyle = "#ff8eb6";
+            else if (e.kind === "drifter") ctx.fillStyle = "#d8e8ff";
+            else if (e.kind === "charger") ctx.fillStyle = "#ff6c6c";
+            else ctx.fillStyle = "#ffb280";
+            ctx.shadowColor = "#ff87ac";
+            ctx.shadowBlur = 14;
+            ctx.fill();
+        }
+    }
+
+    function drawParticles() {
+        for (const p of particles) {
+            const alpha = Math.max(0, p.life / p.ttl);
+            ctx.fillStyle = p.color + Math.floor(alpha * 255).toString(16).padStart(2, "0");
+            ctx.fillRect(p.x, p.y, 2, 2);
+        }
+    }
+
+    function showPhaseMessage(text) {
+        phaseMessageEl.textContent = text;
+        phaseMessageEl.style.opacity = "1";
+        setTimeout(() => {
+            phaseMessageEl.style.opacity = "0";
+        }, 1800);
+    }
+
+    function updatePhase() {
+        const old = state.phase;
+        if (state.time >= 90) state.phase = 3;
+        else if (state.time >= 35) state.phase = 2;
+        else state.phase = 1;
+
+        if (state.phase !== old) {
+            if (state.phase === 2) showPhaseMessage("Phase 2: Rhythm Intercept");
+            if (state.phase === 3) showPhaseMessage("Phase 3: Deep Space Pressure");
+        }
+    }
+
+    function rhythmPrompt(index) {
+        if (state.phase !== 2) {
+            rhythmUiEl.style.display = "none";
+            state.rhythmExpected = null;
+            return;
+        }
+
+        rhythmUiEl.style.display = "block";
+        const expected = index % 2 === 0 ? "ArrowLeft" : "ArrowRight";
+        state.rhythmExpected = expected;
+        state.rhythmWindowUntil = performance.now() + 230;
+
+        arrowLeftEl.classList.toggle("active", expected === "ArrowLeft");
+        arrowRightEl.classList.toggle("active", expected === "ArrowRight");
+        setTimeout(() => {
+            arrowLeftEl.classList.remove("active");
+            arrowRightEl.classList.remove("active");
+        }, 220);
+    }
+
+    function handleRhythmInput(key) {
+        if (!state.running || state.phase !== 2) return;
+        if (!state.rhythmExpected) return;
+        if (performance.now() > state.rhythmWindowUntil) return;
+        if (key !== state.rhythmExpected) return;
+
+        state.rhythmExpected = null;
+        state.score += 260 * state.combo;
+        state.combo = Math.min(7.5, state.combo + 0.22);
+
+        let removed = 0;
+        for (let i = enemies.length - 1; i >= 0; i--) {
+            enemies.splice(i, 1);
+            removed++;
+            if (removed >= 3) break;
+        }
+        createExplosion(player.x, player.y - 34, "#d7f5ff", 24);
+    }
+
+    function loop(ts) {
+        if (!state.running) return;
+        if (!state.prevTs) state.prevTs = ts;
+        const dt = Math.min(0.033, (ts - state.prevTs) / 1000);
+        state.prevTs = ts;
+        state.time += dt;
+        updatePhase();
+
+        if (state.time - state.lastHitTime > 6) {
+            state.combo = Math.min(7.5, state.combo + dt * 0.06);
+        }
+        state.score += dt * 8 * state.combo;
+
+        updatePlayer(dt);
+        updateBullets(dt);
+        updateEnemies(dt);
+        updateCollisions();
+        updateParticles(dt);
+
+        drawBackground(dt);
+        drawBullets();
+        drawEnemies();
+        drawParticles();
+        drawPlayer();
+
+        updateHud();
+        requestAnimationFrame(loop);
+    }
+
+    function playBeat(when, index) {
+        if (!audioCtx) return;
+
+        const bassOsc = audioCtx.createOscillator();
+        const bassGain = audioCtx.createGain();
+        bassOsc.type = "triangle";
+        bassOsc.frequency.setValueAtTime(bass[index % bass.length], when);
+        bassGain.gain.setValueAtTime(0.0001, when);
+        bassGain.gain.linearRampToValueAtTime(0.11, when + 0.02);
+        bassGain.gain.exponentialRampToValueAtTime(0.0001, when + 0.26);
+        bassOsc.connect(bassGain).connect(audioCtx.destination);
+        bassOsc.start(when);
+        bassOsc.stop(when + 0.28);
+
+        const leadOsc = audioCtx.createOscillator();
+        const leadGain = audioCtx.createGain();
+        leadOsc.type = "sine";
+        leadOsc.frequency.setValueAtTime(lead[index % lead.length], when + 0.06);
+        leadGain.gain.setValueAtTime(0.0001, when + 0.06);
+        leadGain.gain.linearRampToValueAtTime(0.06, when + 0.09);
+        leadGain.gain.exponentialRampToValueAtTime(0.0001, when + 0.32);
+        leadOsc.connect(leadGain).connect(audioCtx.destination);
+        leadOsc.start(when + 0.06);
+        leadOsc.stop(when + 0.34);
+
+        state.beatIndex = index;
+        spawnEnemyByBeat();
+        rhythmPrompt(index);
+        createExplosion(state.width * 0.5, 56, "#5b7bff", 5);
+    }
+
+    function startBeatClock() {
+        nextBeatAt = audioCtx.currentTime + 0.1;
+        let idx = 0;
+
+        beatTimer = setInterval(() => {
+            while (nextBeatAt < audioCtx.currentTime + 0.18) {
+                playBeat(nextBeatAt, idx++);
+                nextBeatAt += beatInterval;
+            }
+        }, 25);
+    }
+
+    async function initAudio() {
+        if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (audioCtx.state === "suspended") {
+            await audioCtx.resume();
+        }
+    }
+
+    async function startGame() {
+        await initAudio();
+        resize();
+        resetGame();
+        overlay.style.display = "none";
+        state.prevTs = 0;
+        state.running = true;
+        if (beatTimer) clearInterval(beatTimer);
+        startBeatClock();
+        requestAnimationFrame(loop);
+    }
+
+    window.addEventListener("resize", resize);
+    window.addEventListener("keydown", (e) => {
+        keys.add(e.key);
+        handleRhythmInput(e.key);
+        if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " "].includes(e.key)) {
+            e.preventDefault();
+        }
+    }, { passive: false });
+    window.addEventListener("keyup", (e) => keys.delete(e.key));
+    window.addEventListener("blur", () => keys.clear());
+
+    startBtn.addEventListener("click", startGame);
+    resize();
+    setupStars();
+    drawBackground(0);
+</script>
+</body>
+</html>

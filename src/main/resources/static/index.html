@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TFG Motion Control</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 2rem auto;
+            max-width: 760px;
+            line-height: 1.4;
+        }
+        .card {
+            border: 1px solid #ddd;
+            border-radius: 10px;
+            padding: 1rem;
+            margin-top: 1rem;
+        }
+        code {
+            background: #f6f8fa;
+            padding: 0.1rem 0.35rem;
+            border-radius: 6px;
+        }
+    </style>
+</head>
+<body>
+<h1>Hola mundo</h1>
+<p>Tu servidor está activo y listo para controlar una pelota en el PC moviendo el móvil.</p>
+
+<div class="card">
+    <h2>Pantalla de control (PC)</h2>
+    <p>Juego bolita al agujero (3 niveles): <a href="/hole.html">/hole.html</a></p>
+</div>
+
+<div class="card">
+    <h2>Controlador (móvil)</h2>
+    <p>Desde el móvil, abre en el navegador la IP de tu PC con esta ruta: <code>/mobile.html</code></p>
+    <p>Ejemplo: <code>http://192.168.1.50:8080/mobile.html</code></p>
+    <p>Luego pulsa <strong>Activar sensores</strong>.</p>
+    <p>Si no detecta sensores por HTTP, arranca modo seguro con <code>.\scripts\run-https.ps1</code> y abre <code>https://IP_PC:8443/mobile.html</code>.</p>
+</div>
+
+<div class="card">
+    <p>Socket configurado en: <code>/ws/motion</code></p>
+</div>
+</body>
+</html>
