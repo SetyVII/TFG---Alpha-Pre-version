@@ -36,7 +36,13 @@ public class MotionSocketHandler extends TextWebSocketHandler {
                 session.getId(),
                 session.getRemoteAddress(),
                 sessions.size());
-        session.sendMessage(new TextMessage("Hola mundo desde el socket"));
+        sendUnityStatus(session);
+    }
+
+    private void sendUnityStatus(WebSocketSession session) throws IOException {
+        boolean validated = unityTcpForwarder.isUnityValidated();
+        String statusMsg = String.format("{\"type\":\"unityStatus\",\"connected\":%b}", validated);
+        session.sendMessage(new TextMessage(statusMsg));
     }
 
     @Override
@@ -50,7 +56,7 @@ public class MotionSocketHandler extends TextWebSocketHandler {
             log.info("mobile/web->java message: sessionId={} role={} type={}", session.getId(), role, type);
         }
         broadcast(payload);
-        forwardToUnityIfApplicable(payload);
+        forwardToUnityIfApplicable(session, payload);
     }
 
     @Override
@@ -77,7 +83,7 @@ public class MotionSocketHandler extends TextWebSocketHandler {
         }
     }
 
-    private void forwardToUnityIfApplicable(String payload) {
+    private void forwardToUnityIfApplicable(WebSocketSession session, String payload) {
         try {
             String role = getStringField(payload, "role", "");
             if (!"mobile".equalsIgnoreCase(role)) {
@@ -87,7 +93,12 @@ public class MotionSocketHandler extends TextWebSocketHandler {
 
             String type = getStringField(payload, "type", "");
             if ("register".equalsIgnoreCase(type)) {
-                unityTcpForwarder.send(lastAlpha, lastBeta, lastGamma, "none");
+                unityTcpForwarder.send(lastAlpha, lastBeta, lastGamma, "register");
+                if (!unityTcpForwarder.isUnityValidated()) {
+                    log.warn("java->unity rejected register: unity not validated after connection attempt");
+                    sendUnityStatus(session);
+                    return;
+                }
                 log.info("java->unity forwarded register handshake from mobile");
                 return;
             }

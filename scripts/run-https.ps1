@@ -5,10 +5,17 @@ param(
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $keystorePath = Join-Path $projectRoot "src\main\resources\local-dev.p12"
 
-if (-not $JavaHome) {
-    $fallbackJavaHome = "C:\Users\sebastian.vilavila\.jdks\ms-21.0.10"
-    if (Test-Path $fallbackJavaHome) {
-        $JavaHome = $fallbackJavaHome
+if (-not $JavaHome -or -not (Test-Path $JavaHome)) {
+    $jdksRoot = "C:\Users\madrid\.jdks"
+    if (Test-Path $jdksRoot) {
+        # Busca el directorio más reciente que contenga "21"
+        $candidate = Get-ChildItem $jdksRoot -Directory |
+            Where-Object { $_.Name -match "21" } |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+        if ($candidate) {
+            $JavaHome = $candidate.FullName
+        }
     }
 }
 

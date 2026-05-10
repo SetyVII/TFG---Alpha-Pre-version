@@ -33,9 +33,10 @@
 <button id="release" disabled style="margin-top:0.55rem;background:#0f766e;">Soltar</button>
 <button id="btnA" disabled style="margin-top:0.55rem;background:#9333ea;">Saltar (A)</button>
 <button id="btnB" disabled style="margin-top:0.55rem;background:#ea580c;">Validar (B)</button>
-<div id="status">Socket: conectando...</div>
-<div id="debug"></div>
-<div id="hint"></div>
+    <div id="status">Socket: conectando...</div>
+    <div id="unityStatus" style="margin-top:0.5rem;font-weight:600;color:#dc2626;">Unity: verificando...</div>
+    <div id="debug"></div>
+    <div id="hint"></div>
 
 <script>
     const startBtn = document.getElementById("start");
@@ -43,6 +44,7 @@
     const btnA = document.getElementById("btnA");
     const btnB = document.getElementById("btnB");
     const statusEl = document.getElementById("status");
+    const unityStatusEl = document.getElementById("unityStatus");
     const debugEl = document.getElementById("debug");
     const hintEl = document.getElementById("hint");
 
@@ -51,7 +53,7 @@
 
     socket.onopen = () => {
         statusEl.textContent = "Socket: conectado";
-        socket.send(JSON.stringify({ type: "register", role: "mobile" }));
+        // NO enviar register aquí - esperar a que el usuario pulse "Activar sensores"
     };
     socket.onclose = () => statusEl.textContent = "Socket: desconectado";
     socket.onerror = () => statusEl.textContent = "Socket: error";
@@ -60,6 +62,19 @@
             const msg = JSON.parse(event.data);
             if (msg.type === "haptic" && navigator.vibrate) {
                 navigator.vibrate(Array.isArray(msg.pattern) ? msg.pattern : [90]);
+            }
+            if (msg.type === "unityStatus") {
+                const connected = msg.connected === true;
+                unityStatusEl.textContent = connected ? "Unity: conectado" : "Unity: no conectado";
+                unityStatusEl.style.color = connected ? "#16a34a" : "#dc2626";
+                if (!connected) {
+                    canSend = false;
+                    startBtn.disabled = false;
+                    startBtn.textContent = "Activar sensores";
+                    releaseBtn.disabled = true;
+                    btnA.disabled = true;
+                    btnB.disabled = true;
+                }
             }
         } catch (_) {
             // ignore non-json messages
@@ -168,11 +183,15 @@
         window.addEventListener("devicemotion", onMotion, { passive: true });
 
         canSend = true;
-        startBtn.disabled = true;
-        startBtn.textContent = "Sensores activos";
+        startBtn.style.display = 'none';  // Ocultar bot�n permanentemente
         releaseBtn.disabled = false;
         btnA.disabled = false;
         btnB.disabled = false;
+        
+        // Enviar register a Java solo cuando el usuario activa los sensores
+        if (socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ type: "register", role: "mobile" }));
+        }
 
         setTimeout(() => {
             if (!gotMotion && !gotOrientation) {
